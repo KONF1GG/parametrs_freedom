@@ -20,7 +20,7 @@ def get_end_date():
     """
     Возвращает дату, которая на два месяца вперед от текущего.
     """
-    return (datetime.now() + relativedelta(months=2)).replace(day=1)
+    return (datetime.now() + relativedelta(months=3)).replace(day=1)
 
 
 async def get_data_from_setting(client):
@@ -162,7 +162,7 @@ async def main():
 
                 if json_response is None or not json_response:
                     logging.info(f"Получен пустой ответ для настройки {setting_name}, остановка запросов.")
-                    break
+                    continue
 
             async for _ in tqdm(asyncio.as_completed(insert_tasks), total=len(insert_tasks), desc=f"Inserting Indicators for {setting_name}"):
                 await _  # Ожидаем завершения каждой вставки

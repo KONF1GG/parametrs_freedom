@@ -21,11 +21,11 @@ def get_end_date():
     """
     Возвращает дату, которая на два месяца вперед от текущего.
     """
-    return (datetime.now() + relativedelta(months=2)).replace(day=1)
+    return (datetime.now() + relativedelta(months=3)).replace(day=1)
 
 
 async def get_data_from_setting(client):
-    query = 'SELECT DISTINCT name, params, type, updateFrom FROM settings'
+    query = 'SELECT DISTINCT name, params, type, updateFrom, prop FROM settings'
     try:
         all_rows = await client.fetch(query)
         return all_rows
@@ -46,7 +46,7 @@ def get_query_url(name, params, request_date):
     return query_param_string
 
 
-async def get_urls_for_months(setting_name, params, yesterday):
+async def get_urls_for_months(setting_name, params, yesterday, updateFrom = None):
     """
     Генерирует URL для первого числа каждого месяца до текущего месяца + два месяца.
     """
@@ -54,23 +54,28 @@ async def get_urls_for_months(setting_name, params, yesterday):
     end_date = get_end_date()
 
     # Генерируем запросы до конца месяца + 2 месяца
-    request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in range(1, end_date.month + 1)]
+    request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in range(int(yesterday.split('-')[1]), end_date.month + 1)]
+    request_dates.append(updateFrom.replace('-', ''))
 
     return [get_query_url(setting_name, params, request_date) for request_date in request_dates]
 
 
-async def get_urls_for_days(setting_name, params, start_date):
+async def get_urls_for_days(setting_name, params, start_date, update_date = None):
     """
     Генерирует URL для каждого дня, начиная с start_date, до текущего месяца + два месяца.
     """
     urls = []
-    current_date = start_date
+    current_date = datetime.strptime(start_date, '%Y-%m-%d')
     end_date = get_end_date()
 
     while current_date <= end_date:
         query_url = get_query_url(setting_name, params, current_date.strftime('%Y%m%d'))
         urls.append(query_url)
         current_date += timedelta(days=1)
+
+    if update_date is not None:
+        query_url = get_query_url(setting_name, params, update_date.replace('-', ''))
+        urls.append(query_url)
 
     return urls
 
@@ -132,14 +137,14 @@ async def insert_indicator(client, semaphore, indicator):
         except Exception as e:
             logging.error(f"Ошибка при вставке индикатора: {e}")
 
-async def delete_data_from_db(client, start_date, end_date, updateFrom='3'):
+async def delete_data_from_db(client, start_date, end_date, setting_prop, updateFrom=None):
     query = '''
     DELETE FROM grafana.indicators
-    WHERE dt >= '{}' AND dt <= '{}'
-    '''.format(start_date, end_date)
+    WHERE date >= '{}' AND date <= '{}' AND prop = '{}'
+    '''.format(start_date, end_date, setting_prop)
 
-    if updateFrom is not '3':
-        query += " OR dt = '{}'".format(updateFrom)
+    if updateFrom != 'None':
+        query += " OR date = '{}'".format(updateFrom)
 
     try:
         await client.execute(query)
@@ -157,16 +162,22 @@ async def main():
         settings_list = await get_data_from_setting(client)
 
         # Изменяем на более понятный формат
-        settings = {setting['name']: {'params': setting['params'], 'type': setting['type'], 'updateFrom': setting['updateFrom']} for setting in
-                    settings_list}
+        settings = {setting['name']: {'params': setting['params'],
+                                      'type': setting['type'],
+                                      'updateFrom': setting['updateFrom'],
+                                      'prop': setting['prop']} for setting in settings_list}
 
         for setting_name, setting_info in settings.items():
             setting_params = setting_info['params']
             setting_type = setting_info['type']
-            setting_updateFrom = setting_info['updateFrom']
-            yesterday = datetime.now() - timedelta(1)  # Начальная дата
-            start_data_for_type_3 = datetime.now() - relativedelta(months=3)  # 3 месяца назад
-            end_date = yesterday + relativedelta(months=3)
+            if setting_info['updateFrom'] != "None":
+                setting_updateFrom = datetime.strptime(setting_info['updateFrom'], '%d.%m.%Y').strftime("%Y-%m-%d")
+            else:
+                setting_updateFrom = setting_info['updateFrom']
+            setting_prop = setting_info['prop']
+            yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d') # Начальная дата
+            start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')  # 3 месяца назад
+            end_date = (datetime.now() - timedelta(1) + relativedelta(months=3)).strftime('%Y-%m-%d')
             match setting_type:
                 case 1:
                     if setting_name == 'planned':
@@ -174,13 +185,13 @@ async def main():
                     else:
                         urls = await get_urls_for_days(setting_name, setting_params, yesterday)
                 case 2:
-                    await delete_data_from_db(client, yesterday, end_date, setting_updateFrom)
+                    await delete_data_from_db(client, yesterday, end_date, setting_prop, setting_updateFrom)
                     if setting_name == 'planned':
-                        urls = await get_urls_for_months(setting_name, setting_params, yesterday)
+                        urls = await get_urls_for_months(setting_name, setting_params, yesterday, setting_updateFrom)
                     else:
-                        urls = await get_urls_for_days(setting_name, setting_params, yesterday)
+                        urls = await get_urls_for_days(setting_name, setting_params, yesterday, setting_updateFrom)
                 case 3:
-                    await delete_data_from_db(client, start_data_for_type_3, end_date)
+                    await delete_data_from_db(client, start_data_for_type_3, end_date, setting_prop)
                     if setting_name == 'planned':
                         urls = await get_urls_for_months(setting_name, setting_params, yesterday)
                     else:
@@ -198,7 +209,7 @@ async def main():
 
                 if json_response is None or not json_response:
                     logging.info(f"Получен пустой ответ для настройки {setting_name}, остановка запросов.")
-                    break
+                    continue
 
             async for _ in tqdm(asyncio.as_completed(insert_tasks), total=len(insert_tasks), desc=f"Inserting Indicators for {setting_name}"):
                 await _  # Ожидаем завершения каждой вставки
