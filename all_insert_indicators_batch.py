@@ -14,6 +14,7 @@ config = dotenv_values('.env')
 
 MAX_CONCURRENT_INSERTS = 100
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
+BATCH_SIZE = 10000  # Размер пакета вставки
 
 
 def get_end_date():
@@ -91,33 +92,13 @@ async def fetch_json(session, url, semaphore):
         return None
 
 
-async def insert_indicator(client, semaphore, indicator):
+async def insert_indicators(client, semaphore, indicators):
     async with semaphore:
-        indicator_date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
         try:
-            await client.execute(
-                '''
-                INSERT INTO grafana.indicators
-                SELECT
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    {},
-                    cityHash64({}, {}, {}, {}, {}, {}, {}, {}) AS hash
-                WHERE hash NOT IN (SELECT hash FROM grafana.indicators)
-                '''.format(
-                    f"'{indicator_date}'",
-                    f"'{indicator['prop']}'",
-                    indicator['value'],
-                    f"'{indicator.get('pick1')}'",
-                    f"'{indicator.get('pick2')}'",
-                    f"'{indicator.get('pick3')}'",
-                    f"'{indicator.get('pick4')}'",
-                    f"'{indicator.get('pick5')}'",
+            indicator_values = []
+            for indicator in indicators:
+                indicator_date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
+                indicator_values.append((
                     f"'{indicator_date}'",
                     f"'{indicator['prop']}'",
                     indicator['value'],
@@ -126,10 +107,29 @@ async def insert_indicator(client, semaphore, indicator):
                     f"'{indicator.get('pick3')}'",
                     f"'{indicator.get('pick4')}'",
                     f"'{indicator.get('pick5')}'"
-                )
-            )
+                ))
+
+            # Формирование SQL-запроса
+            insert_query = '''
+            INSERT INTO grafana.indicators
+            SELECT
+                {} AS date,
+                {} AS prop,
+                {} AS value,
+                {} AS pick1,
+                {} AS pick2,
+                {} AS pick3,
+                {} AS pick4,
+                {} AS pick5,
+                cityHash64({}, {}, {}, {}, {}, {}, {}, {}) AS hash
+            WHERE hash NOT IN (SELECT hash FROM grafana.indicators)
+            '''
+
+            values_placeholder = ', '.join(f'({", ".join(value)})' for value in indicator_values)
+
+            await client.execute(insert_query.format(*values_placeholder))
         except Exception as e:
-            logging.error(f"Ошибка при вставке индикатора: {e}")
+            logging.error(f"Ошибка при вставке индикаторов: {e}")
 
 
 async def main():
@@ -155,17 +155,24 @@ async def main():
             all_json_responses = await asyncio.gather(*fetch_tasks)
 
             insert_tasks = []
+            indicators_batch = []
             for json_response in all_json_responses:
-                if json_response is not None and json_response:
+                if json_response:
                     for indicator in json_response:
-                        insert_tasks.append(insert_indicator(client, semaphore, indicator))
+                        indicators_batch.append(indicator)
 
-                if json_response is None or not json_response:
-                    logging.info(f"Получен пустой ответ для настройки {setting_name}, остановка запросов.")
-                    continue
+                        # Если пакет полон, вставляем
+                        if len(indicators_batch) >= BATCH_SIZE:
+                            insert_tasks.append(insert_indicators(client, semaphore, indicators_batch))
+                            indicators_batch = []  # Очищаем пакет для следующих данных
 
-            async for _ in tqdm(asyncio.as_completed(insert_tasks), total=len(insert_tasks), desc=f"Inserting Indicators for {setting_name}"):
-                await _  # Ожидаем завершения каждой вставки
+            # Вставляем оставшиеся индикаторы
+            if indicators_batch:
+                insert_tasks.append(insert_indicators(client, semaphore, indicators_batch))
+
+            # Ожидаем завершения всех вставок
+            await asyncio.gather(*insert_tasks)
+
 
 if __name__ == '__main__':
     asyncio.run(main())

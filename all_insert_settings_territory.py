@@ -19,6 +19,7 @@ def insert_territory(territory, results):
     try:
         client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'),
                         database=config.get('DATABASE'))
+        client.execute('TRUNCATE TABLE settings')
         client.execute(
             '''
             INSERT INTO territories
@@ -48,6 +49,7 @@ def insert_territory(territory, results):
 def insert_setting(setting, results):
     try:
         client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'), database=config.get('DATABASE'))
+        client.execute('TRUNCATE TABLE settings')
         client.execute(
             '''
             INSERT INTO settings
