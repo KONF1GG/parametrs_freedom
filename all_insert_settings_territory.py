@@ -19,40 +19,49 @@ def insert_territory(territory, results):
     try:
         client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'),
                         database=config.get('DATABASE'))
-        client.execute('TRUNCATE TABLE settings')
-        client.execute(
-            '''
-            INSERT INTO territories
+        # Логируем данные перед вставкой
+        logging.info(f"Проверка данных перед вставкой в таблицу territories: {territory}")
+
+        query = '''
+            INSERT INTO territories (name, group, maingroup, department, hash, activity_area)
             SELECT
                 '{}',
                 '{}',
                 '{}',
                 '{}',
-                cityHash64('{}', '{}', '{}', '{}') AS hash
+                cityHash64('{}', '{}', '{}', '{}') AS hash,
+                '{}'
             WHERE hash NOT IN (SELECT hash FROM territories)
-            '''.format(
-                territory['name'],
-                territory['group1'],
-                territory['maingroup'],
-                territory['department'],
-                territory['name'],
-                territory['group1'],
-                territory['maingroup'],
-                territory['department']
-            )
+        '''.format(
+            territory.get('name'),
+            territory.get('group1'),
+            territory.get('maingroup'),
+            territory.get('department'),
+            territory.get('name'),
+            territory.get('group1'),
+            territory.get('maingroup'),
+            territory.get('department'),
+            territory.get('activity_area')
         )
+
+        logging.info(f"Запрос на вставку: {query}")
+        client.execute(query)
+
         logging.info(f"Inserting territory: {territory['name']}")
         results.append(f"Inserted territory: {territory['name']}")
     except Exception as e:
         logging.error(f"Ошибка при вставке территории: {e}")
 
+
 def insert_setting(setting, results):
     try:
-        client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'), database=config.get('DATABASE'))
-        client.execute('TRUNCATE TABLE settings')
-        client.execute(
-            '''
-            INSERT INTO settings
+        client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'),
+                        database=config.get('DATABASE'))
+        # Логируем данные перед вставкой
+        logging.info(f"Проверка данных перед вставкой в таблицу settings: {setting}")
+
+        query = '''
+            INSERT INTO settings (name, params, prop, variable1, variable2, variable3, variable4, variable5, type, updateFrom, hash, settings_group)
             SELECT
                 '{}',
                 '{}',
@@ -64,29 +73,34 @@ def insert_setting(setting, results):
                 '{}',
                 '{}',
                 '{}',
-                cityHash64('{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}') AS hash
+                cityHash64('{}', '{}', '{}', '{}', '{}', '{}', '{}', '{}') AS hash,
+                '{}'
             WHERE hash NOT IN (SELECT hash FROM settings)
-            '''.format(
-                setting['name'],
-                setting['params'],
-                setting.get('prop'),
-                setting.get('pick1'),
-                setting.get('pick2'),
-                setting.get('pick3'),
-                setting.get('pick4'),
-                setting.get('pick5'),
-                setting['type'],
-                setting.get('updateFrom'),
-                setting['name'],
-                setting['params'],
-                setting.get('prop'),
-                setting.get('pick1'),
-                setting.get('pick2'),
-                setting.get('pick3'),
-                setting.get('pick4'),
-                setting.get('pick5')
-            )
+        '''.format(
+            setting['name'],
+            setting['params'],
+            setting.get('prop'),
+            setting.get('pick1'),
+            setting.get('pick2'),
+            setting.get('pick3'),
+            setting.get('pick4'),
+            setting.get('pick5'),
+            setting['type'],
+            setting.get('updateFrom'),
+            setting['name'],
+            setting['params'],
+            setting.get('prop'),
+            setting.get('pick1'),
+            setting.get('pick2'),
+            setting.get('pick3'),
+            setting.get('pick4'),
+            setting.get('pick5'),
+            setting['settings_group']
         )
+
+        logging.info(f"Запрос на вставку: {query}")
+        client.execute(query)
+
         logging.info(f"Inserting setting: {setting['name']}")
         results.append(f"Inserted setting: {setting['name']}")
     except Exception as e:
@@ -169,6 +183,11 @@ async def main():
         territory_url = 'http://server1c.freedom1.ru/UNF_CRM_WS/hs/Grafana/anydata?query=territories'
         territory_data = await fetch_data_from_1c(session, territory_url)
 
+        client = Client(host=config.get('HOST'), user=config.get('USER'), password=config.get('PASSWORD'),
+                        database=config.get('DATABASE'))
+        client.execute('TRUNCATE table settings')
+        client.execute('TRUNCATE table territories')
+        client.disconnect()
         if territory_data:
             load_territories(territory_data)
 
