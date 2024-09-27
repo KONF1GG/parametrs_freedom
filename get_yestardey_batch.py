@@ -6,12 +6,10 @@ from dotenv import dotenv_values
 import logging
 from datetime import datetime, timedelta
 from tqdm.asyncio import tqdm
-from dateutil.relativedelta import relativedelta  # Для работы с месяцами
+from dateutil.relativedelta import relativedelta
 import json
 import requests
 import cityhash
-
-
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +17,7 @@ config = dotenv_values('.env')
 
 MAX_CONCURRENT_INSERTS = 10
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
-BATCH_SIZE = 100 # Размер пакета для вставки
+BATCH_SIZE = 100  # Размер пакета для вставки
 
 API_TOKEN = config.get('API_TOKEN')
 CHAT_ID = config.get('CHAT_ID')
@@ -34,6 +32,7 @@ def send_telegram_message(message):
             logging.error(f"Ошибка отправки уведомления: {response.status_code}, {response.text}")
     except Exception as e:
         logging.error(f"Ошибка при отправке уведомления: {e}")
+
 
 def get_end_date():
     """
@@ -64,17 +63,18 @@ def get_query_url(name, params, request_date):
     return query_param_string
 
 
-async def get_urls_for_months(setting_name, params, yesterday, updateFrom=None):
+async def get_urls_for_months(setting_name, params, start_date, updateFrom=None):
     """
-    Генерирует URL для первого числа каждого месяца до текущего месяца + два месяца.
+    Генерирует URL для первого числа каждого месяца начиная с даты start_date.
     """
     current_year = datetime.now().year
     end_date = get_end_date()
 
-    # Генерируем запросы до конца месяца + 2 месяца
     request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in
-                     range(int(yesterday.split('-')[1]), end_date.month + 1)]
-    request_dates.append(updateFrom.replace('-', ''))
+                     range(int(start_date.split('-')[1]), end_date.month + 1)]
+
+    if updateFrom:
+        request_dates.append(updateFrom.replace('-', ''))
 
     return [get_query_url(setting_name, params, request_date) for request_date in request_dates]
 
@@ -122,7 +122,6 @@ async def insert_indicators(client, semaphore, indicators_batch):
         if not indicators_batch:
             return
 
-        # Создаем строки значений для вставки с использованием UNION ALL и алиасов для каждого столбца
         value_strings = []
         for indicator in indicators_batch:
             date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
@@ -148,7 +147,6 @@ async def insert_indicators(client, semaphore, indicators_batch):
             )
             value_strings.append(value_string)
 
-        # Объединяем строки с помощью UNION ALL
         values = ' UNION ALL '.join(value_strings)
 
         query = f'''
@@ -160,20 +158,16 @@ async def insert_indicators(client, semaphore, indicators_batch):
             WHERE tmp.hash NOT IN (SELECT hash FROM grafana.indicators);
         '''
         try:
-            # Выполняем запрос
             await client.execute(query)
         except Exception as e:
             logging.error(f"Ошибка при вставке индикаторов: {e}")
 
 
-async def delete_data_from_db(client, start_date, end_date, setting_prop, updateFrom=None):
-    query = '''
+async def delete_data_from_db(client, start_date, end_date, setting_prop):
+    query = f'''
     DELETE FROM grafana.indicators
-    WHERE date >= '{}' AND date <= '{}' AND prop = '{}'
-    '''.format(start_date, end_date, setting_prop)
-
-    if updateFrom != 'None':
-        query += " OR date = '{}'".format(updateFrom)
+    WHERE date >= '{start_date}' AND date <= '{end_date}' AND prop = '{setting_prop}'
+    '''
 
     try:
         await client.execute(query)
@@ -182,16 +176,14 @@ async def delete_data_from_db(client, start_date, end_date, setting_prop, update
 
 
 async def main():
-
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSERTS)  # Семафор для вставок в ClickHouse
-    semaphore_1c = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_TO_1C)  # Семафор для запросов к 1С
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSERTS)
+    semaphore_1c = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_TO_1C)
 
     async with ClientSession() as session:
         client = ChClient(session, url=config.get('URL'), user=config.get('USER'),
                           password=config.get('PASSWORD'), database=config.get('DATABASE'))
         settings_list = await get_data_from_setting(client)
 
-        # Изменяем на более понятный формат
         settings = {setting['name']: {'params': setting['params'],
                                       'type': setting['type'],
                                       'updateFrom': setting['updateFrom'],
@@ -200,32 +192,42 @@ async def main():
         for setting_name, setting_info in settings.items():
             setting_params = setting_info['params']
             setting_type = setting_info['type']
-            if setting_info['updateFrom'] != "None":
-                setting_updateFrom = datetime.strptime(setting_info['updateFrom'], '%d.%m.%Y').strftime("%Y-%m-%d")
-            else:
-                setting_updateFrom = setting_info['updateFrom']
+            setting_updateFrom = setting_info['updateFrom']
             setting_prop = setting_info['prop']
-            yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')  # Начальная дата
-            start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')  # 3 месяца назад
-            end_date = (datetime.now() - timedelta(1) + relativedelta(months=2)).strftime('%Y-%m-%d')  # 3 месяца вперед
+            yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')
+            start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')
+            end_date = (datetime.now() + relativedelta(months=2)).strftime('%Y-%m-%d')
+
+            # Определяем start_date, если есть updateFrom, то используем его
+            if setting_updateFrom and setting_updateFrom != 'None':
+                setting_updateFrom = datetime.strptime(setting_updateFrom, '%d.%m.%Y').strftime('%Y-%m-%d')
+                start_date = setting_updateFrom
+                if start_date < start_data_for_type_3:
+                    start_data_for_type_3 = start_date
+            else:
+                start_date = yesterday
+
             match setting_type:
                 case 1:
-                    if setting_name == 'planned':
-                        urls = await get_urls_for_months(setting_name, setting_params, yesterday)
+                    if setting_updateFrom and setting_updateFrom != 'None':
+                        await delete_data_from_db(client, start_date, end_date, setting_prop)
+                        urls = await get_urls_for_days(setting_name, setting_params,
+                                                       start_date) if setting_name != 'planned' else await get_urls_for_months(
+                            setting_name, setting_params, start_date)
                     else:
-                        urls = await get_urls_for_days(setting_name, setting_params, yesterday)
+                        urls = await get_urls_for_days(setting_name, setting_params,
+                                                       start_date) if setting_name != 'planned' else await get_urls_for_months(
+                            setting_name, setting_params, start_date)
                 case 2:
-                    await delete_data_from_db(client, yesterday, end_date, setting_prop, setting_updateFrom)
-                    if setting_name == 'planned':
-                        urls = await get_urls_for_months(setting_name, setting_params, yesterday, setting_updateFrom)
-                    else:
-                        urls = await get_urls_for_days(setting_name, setting_params, yesterday, setting_updateFrom)
+                    await delete_data_from_db(client, start_date, end_date, setting_prop)
+                    urls = await get_urls_for_days(setting_name, setting_params, start_date,
+                                                   setting_updateFrom) if setting_name != 'planned' else await get_urls_for_months(
+                        setting_name, setting_params, start_date)
                 case 3:
                     await delete_data_from_db(client, start_data_for_type_3, end_date, setting_prop)
-                    if setting_name == 'planned':
-                        urls = await get_urls_for_months(setting_name, setting_params, yesterday)
-                    else:
-                        urls = await get_urls_for_days(setting_name, setting_params, yesterday)
+                    urls = await get_urls_for_days(setting_name, setting_params,
+                                                   start_date) if setting_name != 'planned' else await get_urls_for_months(
+                        setting_name, setting_params, start_date)
 
             fetch_tasks = [fetch_json(session, url, semaphore_1c) for url in urls]
             logging.info(f"Отправляем запросы для {setting_name}, всего запросов: {len(fetch_tasks)}")
@@ -255,10 +257,7 @@ async def main():
                 await _
 
 
-if __name__ == '__main__':
-    # send_telegram_message("Программа запущена")
-    start = datetime.now()
+if __name__ == "__main__":
+    send_telegram_message("Запуск программы")
     asyncio.run(main())
-    print(datetime.now() - start)
-    send_telegram_message(f"Программа завершена успешно"
-                          f"время выполнения - {datetime.now() - start}")
+    send_telegram_message("Завершение программы")
