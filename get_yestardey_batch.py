@@ -24,10 +24,6 @@ BATCH_SIZE = 100 # Размер пакета для вставки
 API_TOKEN = config.get('API_TOKEN')
 CHAT_ID = config.get('CHAT_ID')
 
-# Функция для вычисления хеша
-def city_hash64(*args):
-    concatenated_string = ''.join(map(str, args))
-    return cityhash.CityHash64(concatenated_string)
 
 def send_telegram_message(message):
     url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
@@ -129,16 +125,26 @@ async def insert_indicators(client, semaphore, indicators_batch):
         # Создаем строки значений для вставки с использованием UNION ALL и алиасов для каждого столбца
         value_strings = []
         for indicator in indicators_batch:
+            date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
+            prop = indicator['prop']
+            value = indicator['value']
+            variable1 = indicator.get('pick1', '')
+            variable2 = indicator.get('pick2', '')
+            variable3 = indicator.get('pick3', '')
+            variable4 = indicator.get('pick4', '')
+            variable5 = indicator.get('pick5', '')
+
             value_string = (
                 f"SELECT "
-                f"'{datetime.strptime(indicator['dt'], '%d.%m.%Y').date()}' AS date, "
-                f"'{indicator['prop']}' AS prop, "
-                f"{indicator['value']} AS value, "
-                f"'{indicator.get('pick1', '')}' AS variable1, "
-                f"'{indicator.get('pick2', '')}' AS variable2, "
-                f"'{indicator.get('pick3', '')}' AS variable3, "
-                f"'{indicator.get('pick4', '')}' AS variable4, "
-                f"'{indicator.get('pick5', '')}' AS variable5"
+                f"'{date}' AS date, "
+                f"'{prop}' AS prop, "
+                f"{value} AS value, "
+                f"'{variable1}' AS variable1, "
+                f"'{variable2}' AS variable2, "
+                f"'{variable3}' AS variable3, "
+                f"'{variable4}' AS variable4, "
+                f"'{variable5}' AS variable5, "
+                f"cityHash64('{date}', '{prop}', {value}, '{variable1}', '{variable2}', '{variable3}', '{variable4}', '{variable5}') AS hash"
             )
             value_strings.append(value_string)
 
@@ -146,13 +152,12 @@ async def insert_indicators(client, semaphore, indicators_batch):
         values = ' UNION ALL '.join(value_strings)
 
         query = f'''
-            INSERT INTO grafana.indicators (date, prop, value, variable1, variable2, variable3, variable4, variable5)
+            INSERT INTO grafana.indicators (date, prop, value, variable1, variable2, variable3, variable4, variable5, hash)
             SELECT *
             FROM (
                 {values}
             ) AS tmp
-            WHERE cityHash64(date, prop, value, variable1, variable2, variable3, variable4, variable5) NOT IN 
-            (SELECT hash FROM grafana.indicators)
+            WHERE tmp.hash NOT IN (SELECT hash FROM grafana.indicators);
         '''
         try:
             # Выполняем запрос
@@ -203,8 +208,6 @@ async def main():
             yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')  # Начальная дата
             start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')  # 3 месяца назад
             end_date = (datetime.now() - timedelta(1) + relativedelta(months=2)).strftime('%Y-%m-%d')  # 3 месяца вперед
-            if setting_name != 'planned':
-                continue
             match setting_type:
                 case 1:
                     if setting_name == 'planned':
