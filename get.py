@@ -10,6 +10,8 @@ from dateutil.relativedelta import relativedelta
 import json
 import requests
 import cityhash
+import re
+from get_logins import get_logins
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -17,10 +19,12 @@ config = dotenv_values('.env')
 
 MAX_CONCURRENT_INSERTS = 10
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
-BATCH_SIZE = 100  # Размер пакета для вставки
+BATCH_SIZE = 50  # Размер пакета для вставки
 
 API_TOKEN = config.get('API_TOKEN')
 CHAT_ID = config.get('CHAT_ID')
+
+DELAY_BETWEEN_REQUESTS = 2
 
 
 def send_telegram_message(message):
@@ -35,10 +39,7 @@ def send_telegram_message(message):
 
 
 def get_end_date():
-    """
-    Возвращает дату, которая на два месяца вперед от текущего.
-    """
-    return (datetime.now() + relativedelta(months=2)).replace(day=1)
+    return datetime.now()
 
 
 async def get_data_from_setting(client):
@@ -47,6 +48,7 @@ async def get_data_from_setting(client):
         all_rows = await client.fetch(query)
         return all_rows
     except Exception as e:
+        send_telegram_message(f"Ошибка выполнения запроса: {e}")
         logging.error(f"Ошибка выполнения запроса: {e}")
         return None
 
@@ -103,17 +105,47 @@ async def fetch_json(session, url, semaphore):
     async with semaphore:
         try:
             logging.debug(f"Отправка запроса: {url}")
-            await asyncio.sleep(1)
+
+            # Добавляем задержку перед каждым запросом
+            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 response.raise_for_status()
                 logging.debug(f"Успешный ответ от {url}")
+
                 json_data = await response.json()
                 logging.info(f"Данные получены с {url}")
-                return json_data
+
+                # Извлечение даты из URL
+                match = re.search(r'&dt_dt=(\d{8})', url)
+                extracted_date = None
+                if match:
+                    extracted_date = datetime.strptime(match.group(1), '%Y%m%d').strftime('%d.%m.%Y')
+                else:
+                    logging.warning(f"Не удалось найти дату в URL {url}")
+
+                # Обработка случая, когда json_data — это список
+                if isinstance(json_data, list):
+                    for item in json_data:
+                        if isinstance(item, dict) and 'dt' not in item:
+                            item['dt'] = extracted_date
+                    return json_data
+
+                # Обработка случая, когда json_data — это словарь
+                elif isinstance(json_data, dict):
+                    if 'dt' not in json_data:
+                        json_data['dt'] = extracted_date
+                    return json_data
+                else:
+                    logging.error(f"Ожидался словарь или список, но получен {type(json_data)}: {json_data}")
+                    return None
+
         except asyncio.TimeoutError:
             logging.error(f"Таймаут при запросе {url}")
+            send_telegram_message(f"Таймаут при запросе: {e}")
         except Exception as e:
             logging.error(f"Ошибка при получении JSON из {url}: {e}")
+            send_telegram_message(f"Ошибка при получении JSON из: {e}")
         return None
 
 
@@ -126,7 +158,7 @@ async def insert_indicators(client, semaphore, indicators_batch):
         for indicator in indicators_batch:
             date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
             prop = indicator['prop']
-            value = indicator['value']
+            value = indicator.get('value', 0)
             variable1 = indicator.get('pick1', '')
             variable2 = indicator.get('pick2', '')
             variable3 = indicator.get('pick3', '')
@@ -161,6 +193,7 @@ async def insert_indicators(client, semaphore, indicators_batch):
             await client.execute(query)
         except Exception as e:
             logging.error(f"Ошибка при вставке индикаторов: {e}")
+            send_telegram_message(f"Ошибка при вставке индикаторов: {e}")
 
 
 async def delete_data_from_db(client, start_date, end_date, setting_prop):
@@ -173,6 +206,7 @@ async def delete_data_from_db(client, start_date, end_date, setting_prop):
         await client.execute(query)
     except Exception as e:
         logging.error(f"Ошибка при удалении данных: {e}")
+        send_telegram_message(f"Ошибка при удалении данных: {e}")
 
 
 async def main():
@@ -195,8 +229,8 @@ async def main():
             setting_updateFrom = setting_info['updateFrom']
             setting_prop = setting_info['prop']
             yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')
-            start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')
-            end_date = (datetime.now() + relativedelta(months=2)).strftime('%Y-%m-%d')
+            start_data_for_type_3 = (datetime.now()).strftime('%Y-%m-%d')
+            end_date = (datetime.now()).strftime('%Y-%m-%d')
 
             # Определяем start_date, если есть updateFrom, то используем его
             if setting_updateFrom and setting_updateFrom != 'None':
@@ -209,25 +243,18 @@ async def main():
 
             match setting_type:
                 case 1:
-                    if setting_updateFrom and setting_updateFrom != 'None':
-                        await delete_data_from_db(client, start_date, end_date, setting_prop)
-                        urls = await get_urls_for_days(setting_name, setting_params,
-                                                       start_date) if setting_name != 'planned' else await get_urls_for_months(
-                            setting_name, setting_params, start_date)
-                    else:
-                        urls = await get_urls_for_days(setting_name, setting_params,
-                                                       start_date) if setting_name != 'planned' else await get_urls_for_months(
-                            setting_name, setting_params, start_date)
+                    await delete_data_from_db(client, start_date, end_date, setting_prop)
+                    urls = await get_urls_for_days(setting_name, setting_params,
+                                                   start_date) if setting_name != 'planned' else await get_urls_for_months(
+                        setting_name, setting_params, start_date)
                 case 2:
                     await delete_data_from_db(client, start_date, end_date, setting_prop)
-                    urls = await get_urls_for_days(setting_name, setting_params, start_date,
-                                                   setting_updateFrom) if setting_name != 'planned' else await get_urls_for_months(
-                        setting_name, setting_params, start_date)
+                    urls = await get_urls_for_months(setting_name, setting_params, start_date)
                 case 3:
                     await delete_data_from_db(client, start_data_for_type_3, end_date, setting_prop)
                     urls = await get_urls_for_days(setting_name, setting_params,
                                                    start_date) if setting_name != 'planned' else await get_urls_for_months(
-                        setting_name, setting_params, start_date)
+                        setting_name, setting_params, start_data_for_type_3)
 
             fetch_tasks = [fetch_json(session, url, semaphore_1c) for url in urls]
             logging.info(f"Отправляем запросы для {setting_name}, всего запросов: {len(fetch_tasks)}")
@@ -258,6 +285,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    send_telegram_message("Запуск программы")
+    # send_telegram_message("Запуск программы парсинга логинов")
+    # asyncio.run(get_logins())
+    # send_telegram_message("Завершение программы парсинга логинов")
+    send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
-    send_telegram_message("Завершение программы")
+    send_telegram_message("Завершение программы парсинга параметров")

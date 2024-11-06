@@ -8,10 +8,6 @@ from datetime import datetime, timedelta
 from tqdm.asyncio import tqdm
 from dateutil.relativedelta import relativedelta  # Для работы с месяцами
 import json
-import requests
-import cityhash
-
-
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,21 +15,7 @@ config = dotenv_values('.env')
 
 MAX_CONCURRENT_INSERTS = 10
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
-BATCH_SIZE = 100 # Размер пакета для вставки
 
-API_TOKEN = config.get('API_TOKEN')
-CHAT_ID = config.get('CHAT_ID')
-
-
-def send_telegram_message(message):
-    url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
-    data = {'chat_id': CHAT_ID, 'text': message}
-    try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            logging.error(f"Ошибка отправки уведомления: {response.status_code}, {response.text}")
-    except Exception as e:
-        logging.error(f"Ошибка при отправке уведомления: {e}")
 
 def get_end_date():
     """
@@ -64,7 +46,7 @@ def get_query_url(name, params, request_date):
     return query_param_string
 
 
-async def get_urls_for_months(setting_name, params, yesterday, updateFrom=None):
+async def get_urls_for_months(setting_name, params, yesterday, updateFrom = None):
     """
     Генерирует URL для первого числа каждого месяца до текущего месяца + два месяца.
     """
@@ -72,8 +54,7 @@ async def get_urls_for_months(setting_name, params, yesterday, updateFrom=None):
     end_date = get_end_date()
 
     # Генерируем запросы до конца месяца + 2 месяца
-    request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in
-                     range(int(yesterday.split('-')[1]), end_date.month + 1)]
+    request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in range(int(yesterday.split('-')[1]), end_date.month + 1)]
     request_dates.append(updateFrom.replace('-', ''))
 
     return [get_query_url(setting_name, params, request_date) for request_date in request_dates]
@@ -103,7 +84,6 @@ async def fetch_json(session, url, semaphore):
     async with semaphore:
         try:
             logging.debug(f"Отправка запроса: {url}")
-            await asyncio.sleep(1)
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 response.raise_for_status()
                 logging.debug(f"Успешный ответ от {url}")
@@ -117,54 +97,45 @@ async def fetch_json(session, url, semaphore):
         return None
 
 
-async def insert_indicators(client, semaphore, indicators_batch):
+async def insert_indicator(client, semaphore, indicator):
     async with semaphore:
-        if not indicators_batch:
-            return
-
-        # Создаем строки значений для вставки с использованием UNION ALL и алиасов для каждого столбца
-        value_strings = []
-        for indicator in indicators_batch:
-            date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
-            prop = indicator['prop']
-            value = indicator['value']
-            variable1 = indicator.get('pick1', '')
-            variable2 = indicator.get('pick2', '')
-            variable3 = indicator.get('pick3', '')
-            variable4 = indicator.get('pick4', '')
-            variable5 = indicator.get('pick5', '')
-
-            value_string = (
-                f"SELECT "
-                f"'{date}' AS date, "
-                f"'{prop}' AS prop, "
-                f"{value} AS value, "
-                f"'{variable1}' AS variable1, "
-                f"'{variable2}' AS variable2, "
-                f"'{variable3}' AS variable3, "
-                f"'{variable4}' AS variable4, "
-                f"'{variable5}' AS variable5, "
-                f"cityHash64('{date}', '{prop}', {value}, '{variable1}', '{variable2}', '{variable3}', '{variable4}', '{variable5}') AS hash"
-            )
-            value_strings.append(value_string)
-
-        # Объединяем строки с помощью UNION ALL
-        values = ' UNION ALL '.join(value_strings)
-
-        query = f'''
-            INSERT INTO grafana.indicators (date, prop, value, variable1, variable2, variable3, variable4, variable5, hash)
-            SELECT *
-            FROM (
-                {values}
-            ) AS tmp
-            WHERE tmp.hash NOT IN (SELECT hash FROM grafana.indicators);
-        '''
+        indicator_date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
         try:
-            # Выполняем запрос
-            await client.execute(query)
+            await client.execute(
+                '''
+                INSERT INTO grafana.indicators
+                SELECT
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    {},
+                    cityHash64({}, {}, {}, {}, {}, {}, {}, {}) AS hash
+                WHERE hash NOT IN (SELECT hash FROM grafana.indicators)
+                '''.format(
+                    f"'{indicator_date}'",
+                    f"'{indicator['prop']}'",
+                    indicator['value'],
+                    f"'{indicator.get('pick1')}'",
+                    f"'{indicator.get('pick2')}'",
+                    f"'{indicator.get('pick3')}'",
+                    f"'{indicator.get('pick4')}'",
+                    f"'{indicator.get('pick5')}'",
+                    f"'{indicator_date}'",
+                    f"'{indicator['prop']}'",
+                    indicator['value'],
+                    f"'{indicator.get('pick1')}'",
+                    f"'{indicator.get('pick2')}'",
+                    f"'{indicator.get('pick3')}'",
+                    f"'{indicator.get('pick4')}'",
+                    f"'{indicator.get('pick5')}'"
+                )
+            )
         except Exception as e:
-            logging.error(f"Ошибка при вставке индикаторов: {e}")
-
+            logging.error(f"Ошибка при вставке индикатора: {e}")
 
 async def delete_data_from_db(client, start_date, end_date, setting_prop, updateFrom=None):
     query = '''
@@ -182,7 +153,6 @@ async def delete_data_from_db(client, start_date, end_date, setting_prop, update
 
 
 async def main():
-
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSERTS)  # Семафор для вставок в ClickHouse
     semaphore_1c = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_TO_1C)  # Семафор для запросов к 1С
 
@@ -205,9 +175,9 @@ async def main():
             else:
                 setting_updateFrom = setting_info['updateFrom']
             setting_prop = setting_info['prop']
-            yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')  # Начальная дата
+            yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d') # Начальная дата
             start_data_for_type_3 = (datetime.now() - relativedelta(months=3)).strftime('%Y-%m-%d')  # 3 месяца назад
-            end_date = (datetime.now() - timedelta(1) + relativedelta(months=2)).strftime('%Y-%m-%d')  # 3 месяца вперед
+            end_date = (datetime.now() - timedelta(1) + relativedelta(months=2)).strftime('%Y-%m-%d') # 3 месяца вперед
             match setting_type:
                 case 1:
                     if setting_name == 'planned':
@@ -232,33 +202,19 @@ async def main():
             all_json_responses = await asyncio.gather(*fetch_tasks)
 
             insert_tasks = []
-            indicators_batch = []
             for json_response in all_json_responses:
                 if json_response is not None and json_response:
                     for indicator in json_response:
-                        indicators_batch.append(indicator)
-                        if len(indicators_batch) >= BATCH_SIZE:
-                            insert_tasks.append(insert_indicators(client, semaphore, indicators_batch))
-                            indicators_batch = []
+                        insert_tasks.append(insert_indicator(client, semaphore, indicator))
 
                 if json_response is None or not json_response:
-                    logging.info(f"Получен пустой ответ для настройки {setting_name}")
+                    logging.info(f"Получен пустой ответ для настройки {setting_name}, остановка запросов.")
                     continue
 
-            # Вставляем оставшиеся индикаторы, если есть
-            if indicators_batch:
-                insert_tasks.append(insert_indicators(client, semaphore, indicators_batch))
-
-            # Ожидаем завершения всех задач вставки
-            for _ in tqdm(asyncio.as_completed(insert_tasks), total=len(insert_tasks),
-                          desc=f"Inserting Indicators for {setting_name}"):
-                await _
-
+            async for _ in tqdm(asyncio.as_completed(insert_tasks), total=len(insert_tasks), desc=f"Inserting Indicators for {setting_name}"):
+                await _  # Ожидаем завершения каждой вставки
 
 if __name__ == '__main__':
-    send_telegram_message("Парсер показателей запущен")
     start = datetime.now()
     asyncio.run(main())
     print(datetime.now() - start)
-    send_telegram_message(f"Программа завершена успешно \n"
-                          f"время выполнения - {datetime.now() - start}")
