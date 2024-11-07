@@ -17,7 +17,7 @@ from get_logins import get_logins
 logging.basicConfig(level=logging.INFO)
 config = dotenv_values('.env')
 
-MAX_CONCURRENT_INSERTS = 10
+MAX_CONCURRENT_INSERTS = 5
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
 BATCH_SIZE = 50  # Размер пакета для вставки
 
@@ -142,14 +142,19 @@ async def fetch_json(session, url, semaphore):
 
         except asyncio.TimeoutError:
             logging.error(f"Таймаут при запросе {url}")
-            send_telegram_message(f"Таймаут при запросе: {e}")
+            send_telegram_message(f"Таймаут при запросе: {url}")
         except Exception as e:
             logging.error(f"Ошибка при получении JSON из {url}: {e}")
             send_telegram_message(f"Ошибка при получении JSON из: {e}")
         return None
 
 
-async def insert_indicators(client, semaphore, indicators_batch):
+import asyncio
+import logging
+from datetime import datetime
+
+
+async def insert_indicators(client, semaphore, indicators_batch, retries=3, delay=2):
     async with semaphore:
         if not indicators_batch:
             return
@@ -189,24 +194,41 @@ async def insert_indicators(client, semaphore, indicators_batch):
             ) AS tmp
             WHERE tmp.hash NOT IN (SELECT hash FROM grafana.indicators);
         '''
-        try:
-            await client.execute(query)
-        except Exception as e:
-            logging.error(f"Ошибка при вставке индикаторов: {e}")
-            send_telegram_message(f"Ошибка при вставке индикаторов: {e}")
+
+        attempt = 0
+        while attempt < retries:
+            try:
+                await client.execute(query)
+                break  # Выход из цикла при успешной отправке
+            except Exception as e:
+                logging.error(f"Ошибка при вставке индикаторов: {e}")
+                attempt += 1
+                if attempt < retries:
+                    await asyncio.sleep(delay)  # Пауза перед следующей попыткой
+                else:
+                    send_telegram_message(f"Ошибка при вставке индикаторов после {retries} попыток: {e}")
 
 
 async def delete_data_from_db(client, start_date, end_date, setting_prop):
-    query = f'''
-    DELETE FROM grafana.indicators
-    WHERE date >= '{start_date}' AND date <= '{end_date}' AND prop = '{setting_prop}'
+    # Запрос на удаление данных
+    delete_query = f'''
+    ALTER TABLE grafana.indicators DELETE WHERE date >= '{start_date}' AND date <= '{end_date}' AND prop = '{setting_prop}'
     '''
 
+    # Запрос на оптимизацию таблицы после удаления данных
+    optimize_query = "OPTIMIZE TABLE grafana.indicators FINAL"
+
     try:
-        await client.execute(query)
+        # Выполнение запроса на удаление данных
+        await client.execute(delete_query)
+
+        # Выполнение запроса на оптимизацию таблицы
+        await client.execute(optimize_query)
+
+        logging.info(f"Данные за период с {start_date} по {end_date} успешно удалены и таблица оптимизирована.")
     except Exception as e:
-        logging.error(f"Ошибка при удалении данных: {e}")
-        send_telegram_message(f"Ошибка при удалении данных: {e}")
+        logging.error(f"Ошибка при удалении или оптимизации данных: {e}")
+        send_telegram_message(f"Ошибка при удалении или оптимизации данных: {e}")
 
 
 async def main():
@@ -240,6 +262,9 @@ async def main():
                     start_data_for_type_3 = start_date
             else:
                 start_date = yesterday
+
+            if setting_name != 'cumulativeConnections':
+                continue
 
             match setting_type:
                 case 1:
@@ -288,6 +313,6 @@ if __name__ == "__main__":
     # send_telegram_message("Запуск программы парсинга логинов")
     # asyncio.run(get_logins())
     # send_telegram_message("Завершение программы парсинга логинов")
-    send_telegram_message("Запуск программы для парсинга параметров")
+    # send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
-    send_telegram_message("Завершение программы парсинга параметров")
+    # send_telegram_message("Завершение программы парсинга параметров")
