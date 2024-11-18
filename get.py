@@ -43,7 +43,7 @@ def get_end_date():
 
 
 async def get_data_from_setting(client):
-    query = 'SELECT DISTINCT name, params, type, updateFrom, prop FROM settings'
+    query = 'SELECT DISTINCT name, params, type, updateFrom FROM settings'
     try:
         all_rows = await client.fetch(query)
         return all_rows
@@ -149,11 +149,6 @@ async def fetch_json(session, url, semaphore):
         return None
 
 
-import asyncio
-import logging
-from datetime import datetime
-
-
 async def insert_indicators(client, semaphore, indicators_batch, retries=3, delay=2):
     async with semaphore:
         if not indicators_batch:
@@ -209,11 +204,17 @@ async def insert_indicators(client, semaphore, indicators_batch, retries=3, dela
                     send_telegram_message(f"Ошибка при вставке индикаторов после {retries} попыток: {e}")
 
 
-
-async def delete_data_from_db(client, start_date, end_date, setting_prop):
-    # Запрос на удаление данных
+async def delete_data_from_db(client, start_date, end_date, setting_name):
+    # Запрос на удаление данных с JOIN через подзапрос
     delete_query = f'''
-    ALTER TABLE grafana.indicators DELETE WHERE date >= '{start_date}' AND date <= '{end_date}' AND prop = '{setting_prop}'
+    ALTER TABLE grafana.indicators DELETE 
+    WHERE date >= '{start_date}' 
+      AND date <= '{end_date}' 
+      AND prop IN (
+        SELECT prop 
+        FROM grafana.settings 
+        WHERE name = '{setting_name}'
+      )
     '''
 
     # Запрос на оптимизацию таблицы после удаления данных
@@ -232,6 +233,7 @@ async def delete_data_from_db(client, start_date, end_date, setting_prop):
         send_telegram_message(f"Ошибка при удалении или оптимизации данных: {e}")
 
 
+
 async def main():
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSERTS)
     semaphore_1c = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_TO_1C)
@@ -244,19 +246,21 @@ async def main():
         settings = {setting['name']: {'params': setting['params'],
                                       'type': setting['type'],
                                       'updateFrom': setting['updateFrom'],
-                                      'prop': setting['prop']} for setting in settings_list}
+                                      } for setting in settings_list}
+
+        print(settings)
 
         for setting_name, setting_info in settings.items():
             setting_params = setting_info['params']
             setting_type = setting_info['type']
             setting_updateFrom = setting_info['updateFrom']
-            setting_prop = setting_info['prop']
             yesterday = (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')
             start_data_for_type_3 = (datetime.now()).strftime('%Y-%m-%d')
             end_date = (datetime.now()).strftime('%Y-%m-%d')
 
             # Определяем start_date, если есть updateFrom, то используем его
-            if setting_updateFrom and setting_updateFrom != 'None':
+            if setting_updateFrom and setting_updateFrom is not None:
+                print(setting_updateFrom)
                 setting_updateFrom = datetime.strptime(setting_updateFrom, '%d.%m.%Y').strftime('%Y-%m-%d')
                 start_date = setting_updateFrom
                 if start_date < start_data_for_type_3:
@@ -266,15 +270,15 @@ async def main():
 
             match setting_type:
                 case 1:
-                    await delete_data_from_db(client, start_date, end_date, setting_prop)
+                    await delete_data_from_db(client, start_date, end_date, setting_name)
                     urls = await get_urls_for_days(setting_name, setting_params,
                                                    start_date) if setting_name != 'planned' else await get_urls_for_months(
                         setting_name, setting_params, start_date)
                 case 2:
-                    await delete_data_from_db(client, start_date, end_date, setting_prop)
+                    await delete_data_from_db(client, start_date, end_date, setting_name)
                     urls = await get_urls_for_months(setting_name, setting_params, start_date)
                 case 3:
-                    await delete_data_from_db(client, start_data_for_type_3, end_date, setting_prop)
+                    await delete_data_from_db(client, start_data_for_type_3, end_date, setting_name)
                     urls = await get_urls_for_days(setting_name, setting_params,
                                                    start_date) if setting_name != 'planned' else await get_urls_for_months(
                         setting_name, setting_params, start_data_for_type_3)
@@ -308,9 +312,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    send_telegram_message("Запуск программы парсинга логинов")
-    asyncio.run(get_logins())
-    send_telegram_message("Завершение программы парсинга логинов")
+    # send_telegram_message("Запуск программы парсинга логинов")
+    # asyncio.run(get_logins())
+    # send_telegram_message("Завершение программы парсинга логинов")
     send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
     send_telegram_message("Завершение программы парсинга параметров ")
