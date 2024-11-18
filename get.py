@@ -180,7 +180,7 @@ async def insert_indicators(client, semaphore, indicators_batch, retries=3, dela
                 f"'{variable3}' AS variable3, "
                 f"'{variable4}' AS variable4, "
                 f"'{variable5}' AS variable5, "
-                f"cityHash64('{date}', '{prop}', {value}, '{variable1}', '{variable2}', '{variable3}', '{variable4}', '{variable5}') AS hash"
+                f"cityHash64('{date}', '{prop}', '{variable1}', '{variable2}', '{variable3}', '{variable4}', '{variable5}') AS hash"
             )
             value_strings.append(value_string)
 
@@ -207,6 +207,7 @@ async def insert_indicators(client, semaphore, indicators_batch, retries=3, dela
                     await asyncio.sleep(delay)  # Пауза перед следующей попыткой
                 else:
                     send_telegram_message(f"Ошибка при вставке индикаторов после {retries} попыток: {e}")
+
 
 
 async def delete_data_from_db(client, start_date, end_date, setting_prop):
@@ -263,9 +264,6 @@ async def main():
             else:
                 start_date = yesterday
 
-            if setting_name != 'cumulativeConnections':
-                continue
-
             match setting_type:
                 case 1:
                     await delete_data_from_db(client, start_date, end_date, setting_prop)
@@ -310,9 +308,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    # send_telegram_message("Запуск программы парсинга логинов")
-    # asyncio.run(get_logins())
-    # send_telegram_message("Завершение программы парсинга логинов")
-    # send_telegram_message("Запуск программы для парсинга параметров")
+    send_telegram_message("Запуск программы парсинга логинов")
+    asyncio.run(get_logins())
+    send_telegram_message("Завершение программы парсинга логинов")
+    send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
-    # send_telegram_message("Завершение программы парсинга параметров")
+    send_telegram_message("Завершение программы парсинга параметров ")
