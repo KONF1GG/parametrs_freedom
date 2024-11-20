@@ -233,7 +233,6 @@ async def delete_data_from_db(client, start_date, end_date, setting_name):
         send_telegram_message(f"Ошибка при удалении или оптимизации данных: {e}")
 
 
-
 async def main():
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_INSERTS)
     semaphore_1c = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS_TO_1C)
@@ -248,8 +247,6 @@ async def main():
                                       'updateFrom': setting['updateFrom'],
                                       } for setting in settings_list}
 
-        print(settings)
-
         for setting_name, setting_info in settings.items():
             setting_params = setting_info['params']
             setting_type = setting_info['type']
@@ -258,9 +255,9 @@ async def main():
             start_data_for_type_3 = (datetime.now()).strftime('%Y-%m-%d')
             end_date = (datetime.now()).strftime('%Y-%m-%d')
 
+            print(setting_updateFrom)
             # Определяем start_date, если есть updateFrom, то используем его
-            if setting_updateFrom and setting_updateFrom is not None:
-                print(setting_updateFrom)
+            if setting_updateFrom and setting_updateFrom != 'None':
                 setting_updateFrom = datetime.strptime(setting_updateFrom, '%d.%m.%Y').strftime('%Y-%m-%d')
                 start_date = setting_updateFrom
                 if start_date < start_data_for_type_3:
