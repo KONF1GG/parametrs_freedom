@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 from aiochclient import ChClient
 from aiohttp import ClientSession
 import aiohttp
@@ -12,6 +12,7 @@ import requests
 import cityhash
 import re
 from get_logins import get_logins
+import urllib.parse
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -68,28 +69,48 @@ def get_first_days_of_month(year):
 
 
 def get_query_url(name, params, request_date):
-    query_param_string = f'http://server1c.freedom1.ru/UNF_CRM_WS/hs/Grafana/anydata?query={name}'
+    query_param_string = f'http://server1c.freedom1.ru/UNF_CRM_WS/hs/Grafana/anydata?query={urllib.parse.quote(name)}'
     for param in params.split(','):
         param = param.strip()
-        query_param_string += f'&{param}' + (f'={request_date}' if param == 'dt_dt' else '')
+        query_param_string += f'&{param}' + (f'={urllib.parse.quote(request_date)}' if param == 'dt_dt' else '')
     return query_param_string
 
 
-async def get_urls_for_months(setting_name, params, start_date, updateFrom=None):
-    """
-    Генерирует URL для первого числа каждого месяца начиная с даты start_date.
-    """
-    current_year = datetime.now().year
-    end_date = get_end_date()
 
-    request_dates = [datetime(current_year, month, 1).strftime('%Y%m%d') for month in
-                     range(int(start_date.split('-')[1]), end_date.month + 1)]
+async def get_urls_for_months(setting_name, params, start_date=None, updateFrom=None):
+    """
+    Генерирует URL для первого числа каждого месяца начиная с 2024-01-01
+    до текущего месяца и года + 1.
+    """
+    # Фиксированная начальная дата
+    fixed_start_date = datetime(2024, 1, 1)  # 2024-01-01
 
+    # Текущая дата
+    current_date = datetime.now()
+
+    # Конечная дата: текущий месяц и год + 1
+    if current_date.month == 12:
+        end_date = current_date.replace(year=current_date.year + 1, month=1, day=1)
+    else:
+        end_date = current_date.replace(month=current_date.month + 1, day=1)
+
+    # Генерация списка дат с первого числа каждого месяца
+    request_dates = []
+    current = fixed_start_date
+    while current <= end_date:
+        request_dates.append(current.strftime('%Y%m%d'))
+        # Переход к следующему месяцу
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    # Если указан updateFrom, добавляем его в список дат
     if updateFrom:
         request_dates.append(updateFrom.replace('-', ''))
 
+    # Генерация URL для каждой даты
     return [get_query_url(setting_name, params, request_date) for request_date in request_dates]
-
 
 async def get_urls_for_days(setting_name, params, start_date, update_date=None):
     """
@@ -269,7 +290,6 @@ async def main():
             start_data_for_type_3 = (datetime.now()).strftime('%Y-%m-%d')
             end_date = (datetime.now()).strftime('%Y-%m-%d')
 
-            print(setting_updateFrom)
             # Определяем start_date, если есть updateFrom, то используем его
             if setting_updateFrom and setting_updateFrom != 'None':
                 setting_updateFrom = datetime.strptime(setting_updateFrom, '%d.%m.%Y').strftime('%Y-%m-%d')
@@ -324,8 +344,8 @@ async def main():
 
 if __name__ == "__main__":
     # send_telegram_message("Запуск программы парсинга логинов")
-    # asyncio.run(get_logins())
+    asyncio.run(get_logins())
     # send_telegram_message("Завершение программы парсинга логинов")
-    send_telegram_message("Запуск программы для парсинга параметров")
+    # send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
-    send_telegram_message("Завершение программы парсинга параметров ")
+    # send_telegram_message("Завершение программы парсинга параметров ")

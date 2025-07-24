@@ -1,0 +1,1 @@
+D:\Leontii\parametrs_freedom\.venv\Scripts\python.exe all_insert_settings_territory.py
