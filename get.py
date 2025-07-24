@@ -27,6 +27,16 @@ CHAT_ID = config.get('CHAT_ID')
 DELAY_BETWEEN_REQUESTS = 2
 
 
+def sanitize_string(value):
+    """
+    Очищает строку от апострофов и других потенциально опасных символов для SQL
+    """
+    if value is None:
+        return ''
+    # Заменяем апострофы на пустую строку или экранируем их
+    return str(value).replace("'", "").replace('"', '')
+
+
 def send_telegram_message(message):
     url = f'https://api.telegram.org/bot{API_TOKEN}/sendMessage'
     data = {'chat_id': CHAT_ID, 'text': message}
@@ -157,13 +167,13 @@ async def insert_indicators(client, semaphore, indicators_batch, retries=3, dela
         value_strings = []
         for indicator in indicators_batch:
             date = datetime.strptime(indicator['dt'], '%d.%m.%Y').date()
-            prop = indicator['prop']
+            prop = sanitize_string(indicator['prop'])
             value = indicator.get('value', 0)
-            variable1 = indicator.get('pick1', '')
-            variable2 = indicator.get('pick2', '')
-            variable3 = indicator.get('pick3', '')
-            variable4 = indicator.get('pick4', '')
-            variable5 = indicator.get('pick5', '')
+            variable1 = sanitize_string(indicator.get('pick1', ''))
+            variable2 = sanitize_string(indicator.get('pick2', ''))
+            variable3 = sanitize_string(indicator.get('pick3', ''))
+            variable4 = sanitize_string(indicator.get('pick4', ''))
+            variable5 = sanitize_string(indicator.get('pick5', ''))
 
             value_string = (
                 f"SELECT "
@@ -241,6 +251,10 @@ async def main():
         client = ChClient(session, url=config.get('URL'), user=config.get('USER'),
                           password=config.get('PASSWORD'), database=config.get('DATABASE'))
         settings_list = await get_data_from_setting(client)
+
+        if settings_list is None:
+            logging.error("Не удалось получить список настроек")
+            return
 
         settings = {setting['name']: {'params': setting['params'],
                                       'type': setting['type'],
