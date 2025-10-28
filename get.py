@@ -583,6 +583,11 @@ async def main():
         start_data_for_type_3 = now.strftime("%Y-%m-%d")
         end_date = now.strftime("%Y-%m-%d")
 
+        # Для planned нужна расширенная конечная дата, включая будущие месяцы
+        future_end_date = (now + relativedelta(months=FUTURE_MONTHS_AHEAD)).strftime(
+            "%Y-%m-%d"
+        )
+
         for setting_name, setting_info in settings.items():
             setting_start_time = datetime.now()
             log_info(f"Обработка настройки: {setting_name}")
@@ -602,9 +607,6 @@ async def main():
             else:
                 start_date = yesterday
 
-            if setting_name != "planned":
-                continue
-
             # Статистика для текущей настройки
             setting_stats = {
                 "name": setting_name,
@@ -617,8 +619,12 @@ async def main():
 
             match setting_type:
                 case 1:
+                    # Для planned используем расширенную дату для удаления будущих данных
+                    delete_end_date = (
+                        future_end_date if setting_name == "planned" else end_date
+                    )
                     await delete_data_from_db(
-                        client, start_date, end_date, setting_name
+                        client, start_date, delete_end_date, setting_name
                     )
                     urls = (
                         await get_urls_for_days(
@@ -628,13 +634,21 @@ async def main():
                         else await get_urls_for_months(setting_name, setting_params)
                     )
                 case 2:
+                    # Для planned используем расширенную дату для удаления будущих данных
+                    delete_end_date = (
+                        future_end_date if setting_name == "planned" else end_date
+                    )
                     await delete_data_from_db(
-                        client, start_date, end_date, setting_name
+                        client, start_date, delete_end_date, setting_name
                     )
                     urls = await get_urls_for_months(setting_name, setting_params)
                 case 3:
+                    # Для planned используем расширенную дату для удаления будущих данных
+                    delete_end_date = (
+                        future_end_date if setting_name == "planned" else end_date
+                    )
                     await delete_data_from_db(
-                        client, start_data_for_type_3, end_date, setting_name
+                        client, start_data_for_type_3, delete_end_date, setting_name
                     )
                     urls = (
                         await get_urls_for_days(
