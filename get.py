@@ -240,7 +240,7 @@ def create_execution_report():
 
 MAX_CONCURRENT_INSERTS = 5
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
-BATCH_SIZE = 50  # Размер пакета для вставки
+BATCH_SIZE = 200  # Размер пакета для вставки
 
 API_TOKEN = config.get("API_TOKEN")
 CHAT_ID = config.get("CHAT_ID")
@@ -304,7 +304,6 @@ async def get_data_from_setting(client):
         log_info(f"Получено {len(all_rows)} настроек из базы данных")
         return all_rows
     except Exception as e:
-        send_telegram_message(f"Ошибка выполнения запроса: {e}")
         log_error(f"Ошибка выполнения запроса: {e}")
         return None
 
@@ -429,10 +428,8 @@ async def fetch_json(session, url, semaphore):
 
         except asyncio.TimeoutError:
             log_error(f"Таймаут при запросе {url}")
-            send_telegram_message(f"Таймаут при запросе: {url}")
         except Exception as e:
             log_error(f"Ошибка при получении JSON из {url}: {e}")
-            send_telegram_message(f"Ошибка при получении JSON из: {e}")
         return None
 
 
@@ -474,19 +471,35 @@ async def insert_indicators(
                 }
             )
 
-        # Используем параметризованный запрос
-        query = """
+        # Формируем VALUES для INSERT запроса
+        values_list = []
+        for item in data_to_insert:
+            # Экранируем строки для SQL
+            date_str = item["date"].strftime("%Y-%m-%d")
+            prop_str = item["prop"].replace("'", "''")
+            variable1_str = item["variable1"].replace("'", "''")
+            variable2_str = item["variable2"].replace("'", "''")
+            variable3_str = item["variable3"].replace("'", "''")
+            variable4_str = item["variable4"].replace("'", "''")
+            variable5_str = item["variable5"].replace("'", "''")
+
+            values_list.append(
+                f"('{date_str}', '{prop_str}', {item['value']}, "
+                f"'{variable1_str}', '{variable2_str}', '{variable3_str}', "
+                f"'{variable4_str}', '{variable5_str}', {item['hash']})"
+            )
+
+        # Используем простой INSERT с VALUES
+        query = f"""
             INSERT INTO grafana.indicators (date, prop, value, variable1, variable2, variable3, variable4, variable5, hash)
-            SELECT date, prop, value, variable1, variable2, variable3, variable4, variable5, hash
-            FROM input('date Date, prop String, value Float64, variable1 String, variable2 String, variable3 String, variable4 String, variable5 String, hash UInt64')
-            WHERE hash NOT IN (SELECT hash FROM grafana.indicators)
+            VALUES {", ".join(values_list)}
         """
 
         attempt = 0
         while attempt < retries:
             try:
-                # Используем execute с данными
-                await client.execute(query, data_to_insert)
+                # Используем execute без дополнительных параметров
+                await client.execute(query)
                 log_info(f"Успешно вставлено {len(data_to_insert)} индикаторов")
                 break  # Выход из цикла при успешной отправке
             except Exception as e:
@@ -495,7 +508,7 @@ async def insert_indicators(
                 if attempt < retries:
                     await asyncio.sleep(delay)  # Пауза перед следующей попыткой
                 else:
-                    send_telegram_message(
+                    log_error(
                         f"Ошибка при вставке индикаторов после {retries} попыток: {e}"
                     )
 
@@ -528,7 +541,6 @@ async def delete_data_from_db(client, start_date, end_date, setting_name):
         )
     except Exception as e:
         log_error(f"Ошибка при удалении или оптимизации данных: {e}")
-        send_telegram_message(f"Ошибка при удалении или оптимизации данных: {e}")
 
 
 async def main():
@@ -589,6 +601,9 @@ async def main():
                     start_data_for_type_3 = start_date
             else:
                 start_date = yesterday
+
+            if setting_name != "planned":
+                continue
 
             # Статистика для текущей настройки
             setting_stats = {
@@ -719,7 +734,7 @@ async def main():
 
 if __name__ == "__main__":
     # send_telegram_message("Запуск программы парсинга логинов")
-    asyncio.run(get_logins())
+    # asyncio.run(get_logins())
     # send_telegram_message("Завершение программы парсинга логинов")
     # send_telegram_message("Запуск программы для парсинга параметров")
     asyncio.run(main())
