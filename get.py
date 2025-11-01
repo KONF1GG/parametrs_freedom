@@ -240,7 +240,7 @@ def create_execution_report():
 
 MAX_CONCURRENT_INSERTS = 5
 MAX_CONCURRENT_REQUESTS_TO_1C = 5
-BATCH_SIZE = 200  # Размер пакета для вставки
+BATCH_SIZE = 100  # Размер пакета для вставки
 
 API_TOKEN = config.get("API_TOKEN")
 CHAT_ID = config.get("CHAT_ID")
@@ -365,8 +365,7 @@ async def get_urls_for_days(setting_name, params, start_date, update_date=None):
     """
     urls = []
     start_date_obj = datetime.strptime(start_date, "%Y-%m-%d")
-    end_date = datetime.now() + relativedelta(months=FUTURE_MONTHS_AHEAD)
-
+    end_date = datetime.now() - timedelta(days=1)  # вчера
     while start_date_obj <= end_date:
         query_url = get_query_url(
             setting_name, params, start_date_obj.strftime("%Y%m%d")
@@ -517,8 +516,8 @@ async def delete_data_from_db(client, start_date, end_date, setting_name):
     # Запрос на удаление данных с JOIN через подзапрос
     delete_query = f"""
     ALTER TABLE grafana.indicators DELETE 
-    WHERE date >= '{start_date}' 
-      AND date <= '{end_date}' 
+    WHERE date >= '{start_date}'
+      AND date <= '{end_date}'
       AND prop IN (
         SELECT prop 
         FROM grafana.settings 
@@ -619,43 +618,46 @@ async def main():
 
             match setting_type:
                 case 1:
-                    # Для planned используем расширенную дату для удаления будущих данных
-                    delete_end_date = (
-                        future_end_date if setting_name == "planned" else end_date
-                    )
+                    delete_end_date = yesterday
                     await delete_data_from_db(
                         client, start_date, delete_end_date, setting_name
                     )
-                    urls = (
-                        await get_urls_for_days(
-                            setting_name, setting_params, start_date
-                        )
-                        if setting_name != "planned"
-                        else await get_urls_for_months(setting_name, setting_params)
+                    urls = await get_urls_for_days(
+                        setting_name, setting_params, start_date
                     )
                 case 2:
-                    # Для planned используем расширенную дату для удаления будущих данных
-                    delete_end_date = (
-                        future_end_date if setting_name == "planned" else end_date
-                    )
-                    await delete_data_from_db(
-                        client, start_date, delete_end_date, setting_name
-                    )
-                    urls = await get_urls_for_months(setting_name, setting_params)
+                    # Для planned используем используем урлы по месяцам
+                    if setting_name != "planned":
+                        log_warning(
+                            f"type=2 допускается только для 'planned', получено '{setting_name}'. Обрабатываю как type=1."
+                        )
+                        delete_end_date = yesterday
+                        await delete_data_from_db(
+                            client, start_date, delete_end_date, setting_name
+                        )
+                        urls = await get_urls_for_days(
+                            setting_name, setting_params, start_date
+                        )
+                    else:
+                        # planned: будущие месяцы разрешены
+                        future_end_date = (
+                            now + relativedelta(months=FUTURE_MONTHS_AHEAD)
+                        ).strftime("%Y-%m-%d")
+                        start_date_plus_one = (
+                            datetime.strptime(start_date, "%Y-%m-%d")
+                            + timedelta(days=1)
+                        ).strftime("%Y-%m-%d")
+                        await delete_data_from_db(
+                            client, start_date_plus_one, future_end_date, setting_name
+                        )
+                        urls = await get_urls_for_months(setting_name, setting_params)
                 case 3:
-                    # Для planned используем расширенную дату для удаления будущих данных
-                    delete_end_date = (
-                        future_end_date if setting_name == "planned" else end_date
-                    )
+                    delete_end_date = yesterday
                     await delete_data_from_db(
                         client, start_data_for_type_3, delete_end_date, setting_name
                     )
-                    urls = (
-                        await get_urls_for_days(
-                            setting_name, setting_params, start_date
-                        )
-                        if setting_name != "planned"
-                        else await get_urls_for_months(setting_name, setting_params)
+                    urls = await get_urls_for_days(
+                        setting_name, setting_params, start_date
                     )
 
             setting_stats["requests"] = len(urls)
@@ -747,9 +749,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    # send_telegram_message("Запуск программы парсинга логинов")
-    # asyncio.run(get_logins())
-    # send_telegram_message("Завершение программы парсинга логинов")
-    # send_telegram_message("Запуск программы для парсинга параметров")
+    asyncio.run(get_logins())
     asyncio.run(main())
-    # send_telegram_message("Завершение программы парсинга параметров ")
