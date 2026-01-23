@@ -643,12 +643,22 @@ async def main():
                         future_end_date = (
                             now + relativedelta(months=FUTURE_MONTHS_AHEAD)
                         ).strftime("%Y-%m-%d")
-                        start_date_plus_one = (
-                            datetime.strptime(start_date, "%Y-%m-%d")
-                            + timedelta(days=1)
-                        ).strftime("%Y-%m-%d")
+                        
+                        # Определяем начальную дату для удаления
+                        if setting_updateFrom and setting_updateFrom != "None":
+                            # Если есть updateFrom, удаляем начиная с этой даты
+                            delete_start_date = start_date
+                            log_info(f"Удаляем данные для {setting_name} начиная с updateFrom: {delete_start_date}")
+                        else:
+                            # Если нет updateFrom, удаляем начиная с завтрашнего дня
+                            delete_start_date = (
+                                datetime.strptime(start_date, "%Y-%m-%d")
+                                + timedelta(days=1)
+                            ).strftime("%Y-%m-%d")
+                            log_info(f"Удаляем данные для {setting_name} начиная с завтрашнего дня: {delete_start_date}")
+                        
                         await delete_data_from_db(
-                            client, start_date_plus_one, future_end_date, setting_name
+                            client, delete_start_date, future_end_date, setting_name
                         )
                         urls = await get_urls_for_months(setting_name, setting_params)
                 case 3:
