@@ -616,6 +616,8 @@ async def main():
                 "indicators": 0,
                 "processing_time": None,
             }
+            # if setting_name != 'ОтношениеФОТкВыручке':
+            #     continue
 
             match setting_type:
                 case 1:
@@ -757,5 +759,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    # asyncio.run(get_logins())
+    asyncio.run(get_logins())
     asyncio.run(main())
